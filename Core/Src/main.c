@@ -35,7 +35,7 @@
  *
  * END OF ISO9141 Information
  *
- * ISO 14230-4 KWP SLOW (5 baud init, 10.4 kbaud)
+ * ISO 14230-4 KWP SLOW (5 baud init, 10.4 kbaud). Used in Corolla Verso 2007.
  * https://m0agx.eu/2018/01/02/reading-obd2-data-without-elm327-part-2-k-line/
  * The request frame is: 0xC2 <ECU_ADDRESS> 0xF1 <MODE> <PID> <CHECKSUM>.
  * The format byte - C2, carries bit-encoded information: 0x1100 0010 - with address information, functional addressing, len = 2
@@ -70,7 +70,7 @@
  *
  *  HARDWARE NOTES
  *  The Nucleo is powered via the 5V rail using a voltage regulator.
- *  The NRST pin needs to be pulld high in this case, because when the ST-LINK is not powered,
+ *  The NRST pin needs to be pulled high in this case, because when the ST-LINK is not powered,
  *  it's undefined.
  *
  *
