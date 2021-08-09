@@ -10,8 +10,14 @@
 
 #include "circular_buffer.h"
 
+/*
+ * FRAME STRUCTURE
+ *
+ * CMD_START_BYTE | CMD_LEN_BYTE | CMD | PAYLOAD | CHECKSUM
+ */
+
 #define CMD_START_BYTE		0xFE
-#define CMD_LEN_BYTE		0x01		/* The command length byte, excluding the first and second byte */
+#define CMD_LEN_BYTE		0x01		/* The command length byte position. The length is excluding the first and second byte */
 
 #define RESPONSE_OK			0xF1
 #define RESPONSE_ERROR		0xFF

@@ -8,6 +8,11 @@
 #include "k_line.h"
 #include "stm32l4xx_hal.h"
 
+#define INIT_BYTE_POS	0x00
+#define KW0_POS			0x01
+#define KW1_POS			0x02
+#define INVERTED_INIT_BYTE_POS	0x03
+
 /****************************************************************************************
  * File variables
  ****************************************************************************************/
@@ -51,19 +56,18 @@ size_t stringlen(const char *str)
 /****************************************************************************************
  * Send an array of bytes via ISR
  ****************************************************************************************/
-void k_line_send_data_it(const uint8_t *str)
+void k_line_send_data_it(const uint8_t *str, const int size)
 {
 	// Check if there's enough space in buffer
-	size_t string_size = stringlen((char*)str);
 	size_t buffer_capacity = circular_buf_capacity(k_line_tx_buffer_handle);
 	int i;
 
-	if (buffer_capacity < string_size)
+	if (buffer_capacity < size)
 	{
 		return;
 	}
 
-	for (i = 0; i < string_size; i++)
+	for (i = 0; i < size; i++)
 	{
 		circular_buf_put(k_line_tx_buffer_handle, *str++);
 	}
@@ -84,12 +88,15 @@ void k_line_send_byte_it(const uint8_t ch)
 		return;
 	}
 
-	circular_buf_put(k_line_tx_buffer_handle, ch);
-	USART1->CR1 |= USART_CR1_TXEIE;
+	USART1->CR1 &= ~USART_CR1_RE;						/* Disable reception during transmission */
+	USART1->CR1 &= ~USART_CR1_RXNEIE;					/* Disable receive interrupt */
+	uint16_t temp __attribute__((unused)) = USART1->RDR;						/* Read any data in the receive buffer */
+	circular_buf_put(k_line_tx_buffer_handle, ch);		/* Put char in queue */
+	USART1->CR1 |= USART_CR1_TXEIE;						/* Enable TX interrupt */
 }
 
 /****************************************************************************************
- * Read a byte from the receive queue. Not used
+ * Read a byte from the receive queue
  ****************************************************************************************/
 uint8_t k_line_read_byte(uint8_t *data)
 {
@@ -140,19 +147,19 @@ int k_line_send_byte(const uint8_t ch)
 /****************************************************************************************
  * Send an array polling. Not used
  ****************************************************************************************/
-int k_line_send_data(const uint8_t *data)
+int k_line_send_data(const uint8_t *data, const int size)
 {
-	size_t string_size = stringlen((char*)data);
 	int i;
 	int ret = 0;
 
-	for (i = 0; i < string_size; i++)
+	for (i = 0; i < size; i++)
 	{
 		ret &= k_line_send_byte(data[i]);
 	}
 
 	return ret;
 }
+
 
 /****************************************************************************************
  * Perform 5-baud slow init
@@ -186,9 +193,10 @@ int k_line_slow_init()
 	 *
 	 * If byte == 0xcc, return true
 	 */
+
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
-	uint8_t obd2_response[8] = {0,0,0,0,0,0,0,0};
-	int protocol = 0;		/* 1 - ISO9141, 2 - KWP2000  */
+	uint8_t obd2_response[4] = {0,0,0,0};
+	int start_time = 0x0;
 
 	k_line_uart_deinit();
 
@@ -201,7 +209,7 @@ int k_line_slow_init()
 	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
 
-	HAL_Delay(3000);										/* Initial delay */
+	HAL_Delay(2500);										/* Initial delay */
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);	/* Start bit */
 	HAL_Delay(200);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);		/* First two bits */
@@ -213,64 +221,49 @@ int k_line_slow_init()
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);	/* Last pair of bits */
 	HAL_Delay(400);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);		/* Stop bit */
-	HAL_Delay(260);
+	HAL_Delay(200);
 
 	HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9);						/* Deinitialize pin 9 */
 	k_line_uart_init(10400);								/* Initialize UART */
 
-	HAL_Delay(300);		/* Wait for 0x55, time W1 */
+	start_time = HAL_GetTick();								/* Record start time - waiting for byte 0x55 and two keywords */
 
-	if (!k_line_read_byte(&obd2_response[0]) && 0x55 != obd2_response[0])
+	while ((3 > circular_buf_size(k_line_rx_buffer_handle)))		/* Wait until three bytes received or timeout */
+	{
+		if ( (HAL_GetTick() - start_time) > (300 + 20 + 20))
+		{
+			return 0;		/* Timeout */
+		}
+	}
+
+	circular_buf_get(k_line_rx_buffer_handle, &obd2_response[INIT_BYTE_POS]);		/* Consume three bytes from the queue */
+	circular_buf_get(k_line_rx_buffer_handle, &obd2_response[KW0_POS]);
+	circular_buf_get(k_line_rx_buffer_handle, &obd2_response[KW1_POS]);
+
+	if ( 	0x55 != obd2_response[INIT_BYTE_POS] 	||								/* Confirm received bytes are part of initializing sequence of KWP2000 slow init procedure */
+			0xE9 != obd2_response[KW0_POS]	 		||
+			0x8F != obd2_response[KW1_POS])
 	{
 		return 0;
 	}
 
+	HAL_Delay(32);
+	k_line_send_byte_it(~obd2_response[KW1_POS]);			/* Send inverted byte */
+	start_time = HAL_GetTick();								/* Record time */
 
-	HAL_Delay(50);	/* Wait for KB1 and KB2 bytes */
-
-	if (!k_line_read_byte(&obd2_response[1]))
+	while (circular_buf_empty(k_line_rx_buffer_handle))
 	{
-		return 0;
+		if ( (HAL_GetTick() - start_time) > 50)
+		{
+			return 0;		/* Timeout */
+		}
 	}
 
-	if (!k_line_read_byte(&obd2_response[2]))
-	{
-		return 0;
-	}
+	circular_buf_get(k_line_rx_buffer_handle, &obd2_response[INVERTED_INIT_BYTE_POS]);		/* Read back ECU response */
 
-	/* Confirm bytes are identical */
-	if (!(obd2_response[1] == obd2_response[2]))
-	{
-		// KWP2000
-		protocol = 2;
-	}
-	else
-	{
-		protocol = 1;
-		// ISO9141
-	}
+	HAL_Delay(35);		/* A small delay before continuing is needed */
 
-	HAL_Delay(25);	/* Timing parameter W4 */
-
-	/* Send inverted v2 */
-	k_line_send_byte_it(obd2_response[2]);
-
-	HAL_Delay(50);
-
-	/* Read response - should be inverted first byte */
-	if (!k_line_read_byte(&obd2_response[3]))
-	{
-		return 0;
-	}
-
-	if (obd2_response[3] == ~obd2_response[0])
-	{
-		return protocol;
-	}
-	else
-	{
-		return 0;
-	}
+	return (0xCC == obd2_response[INVERTED_INIT_BYTE_POS]);
 }
 
 /****************************************************************************************
@@ -309,7 +302,7 @@ void USART1_IRQHandler(void)
 		{
 			USART1->CR1 &= ~USART_CR1_TXEIE;					/* If not data in buffer, disable TX interrupt, but only after last transmission is complete */
 			USART1->CR1 |= (USART_CR1_RE | USART_CR1_RXNEIE);	/* Enable reception */
-			ch = USART1->RDR;									/* Read byte from receive register to clear RXNE flag */
+			//ch = USART1->RDR;									/* Read byte from receive register to clear RXNE flag */
 		}
 	}
 

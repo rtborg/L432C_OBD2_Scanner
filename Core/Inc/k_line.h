@@ -30,9 +30,9 @@ extern cbuf_handle_t k_line_rx_buffer_handle;					/* The k-line receive buffer i
 size_t stringlen(const char *str);								/* Replacement of strlen */
 void k_line_driver_init();										/* Initialize the driver and receive buffer. Needs to be called before using the queue! */
 int k_line_slow_init();												/* Perform 5-baud KWP2000 slow init and initialize the UART */
-void k_line_send_data_it(const uint8_t *str);					/* Send a byte array via ISR */
+void k_line_send_data_it(const uint8_t *str, const int size);					/* Send a byte array via ISR */
 void k_line_send_byte_it(const uint8_t ch);						/* Send a byte via ISR */
 int k_line_send_byte(const uint8_t ch);							/*  Send a byte polling */
-int k_line_send_data(const uint8_t *data);						/* Send a byte array polling */
+int k_line_send_data(const uint8_t *data, const int size);						/* Send a byte array polling */
 
 #endif /* INC_K_LINE_H_ */

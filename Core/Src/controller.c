@@ -16,7 +16,7 @@ at  https://hackaday.com/2015/09/04/embed-with-elliot-practical-state-machines/ 
 #include "stm32l4xx_hal.h"
 
 /* Defines */
-#define CMD_FUNCTIONS_BUFFER_SIZE 128
+#define CMD_FUNCTIONS_BUFFER_SIZE 256
 #define CMD_BUFFER_SIZE 128
 #define CMD_TIMEOUT_MS	20
 

@@ -37,7 +37,7 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
+extern I2C_HandleTypeDef hi2c3;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -54,8 +54,10 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+/* Periodic tasks, run by the scheduler */
 void uart2_response_task();
-void task_100ms();
+void k_line_coolant_query_task();
+void k_line_health_task();
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

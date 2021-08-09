@@ -5,8 +5,9 @@
  *      Author: bkereziev
  */
 
-#include "obd2_parser.h"
+#include <obd2_controller.h>
 #include "stm32l4xx_hal.h"
+#include "k_line.h"
 
 /*
  * OBD2 response frame structure:
@@ -35,12 +36,12 @@ static void state_in_message(uint8_t c);		/* Places all  bytes in the buffer, up
 
 static uint8_t inter_byte_time_exceeded();		/* Needs to be called upon receiving each byte */
 static uint8_t checksum(const uint8_t *data, uint16_t size);		/* Calculate CheckSum8 Modulo 256:  Sum of Bytes % 256 */
-void empty_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length);		/* Default function handler */
+static void empty_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length);		/* Default function handler */
 
 /************************************************************************/
 /* Initialize OBD2 parser task                                           */
 /************************************************************************/
-void obd2_parser_init(const cbuf_handle_t data_queue)
+void obd2_controller_init(const cbuf_handle_t data_queue)
 {
 	incoming_queue = data_queue;				/* Get the pointer to the receive queue */
 	buffer_index = 0;
@@ -63,7 +64,7 @@ void obd2_parser_init(const cbuf_handle_t data_queue)
 /************************************************************************/
 /* OBD2 parser task - runs on each 										*/
 /************************************************************************/
-void obd2_parser_task()
+void obd2_controller_task()
 {
 	static uint8_t ch;
 
@@ -84,7 +85,7 @@ void obd2_parser_task()
 /************************************************************************/
 /* Add a Service 01 handler												*/
 /************************************************************************/
-void obd2_parser_add_command_handler(const uint8_t pid, const obd2_command_handler handler)
+void obd2_controller_add_command_handler(const uint8_t pid, const obd2_command_handler handler)
 {
 	commands[pid] = handler;
 }
@@ -93,9 +94,17 @@ void obd2_parser_add_command_handler(const uint8_t pid, const obd2_command_handl
 /* Add a default handler. All OBD2 responses which do not have
  * a handler are passed to the default handler.						*/
 /************************************************************************/
-void obd2_parser_add_default_handler( const obd2_command_handler handler)
+void obd2_controller_add_default_handler( const obd2_command_handler handler)
 {
 	default_handler = handler;
+}
+
+/*************************************************************************
+ * Send a request via the K-line
+ *************************************************************************/
+void obd2_controller_send_request(const uint8_t *request, const int size)
+{
+	k_line_send_data_it(request, size);
 }
 
 /************************************************************************/

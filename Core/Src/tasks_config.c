@@ -1,6 +1,6 @@
+#include <obd2_controller.h>
 #include "tasks_config.h"
 #include "main.h"
-#include "obd2_parser.h"
 #include "controller.h"
 
 /******************************************************************************
@@ -13,10 +13,11 @@
  */
 static TaskType tasks[] =
 {
-  	{ 0             ,  0, controller_task	},
-	{ 0             ,  0, obd2_parser_task	},
-	{ 0             ,  0, uart2_response_task	},
-	{ INTERVAL_1000MS, 0, task_100ms }
+  	{ 0             , 0, controller_task	},
+	{ 0             , 0, obd2_controller_task	},
+	{ 0             , 0, uart2_response_task	},
+	{ 3000			, 0, k_line_coolant_query_task},
+  	{ 5000			, 0, k_line_health_task }
 };
 
 
