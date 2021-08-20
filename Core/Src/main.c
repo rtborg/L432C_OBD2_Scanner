@@ -131,6 +131,33 @@
 /* USER CODE BEGIN PD */
 #define USART2_RX_BUFFER_SIZE	0xff
 #define USART2_TX_BUFFER_SIZE	0x80
+
+#define K_LINE_INTER_MSG_TIME	20
+
+/* Display coordinates constants */
+#define DISPLAY_STATUS_LINE_1_X	47	/* Each line can contain up to 12 caps characters from 7x10 px font */
+#define DISPLAY_STATUS_LINE_2_X	47
+#define DISPLAY_STATUS_LINE_3_X	47
+
+#define DISPLAY_STATUS_LINE_1_Y	31
+#define DISPLAY_STATUS_LINE_2_Y	41
+#define DISPLAY_STATUS_LINE_3_Y	51
+
+/* Parameters location on the display */
+#define DISPLAY_TEMP_X	1
+#define DISPLAY_TEMP_Y 	10
+#define DISPLAY_RPM_X 	84
+#define DISPLAY_RPM_Y	10
+#define DISPLAY_SPEED_X	1
+#define DISPLAY_SPEED_Y	35
+
+/* The enumeration holds display info line number */
+typedef enum {
+	LINE_1,
+	LINE_2,
+	LINE_3
+}display_line;
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -157,7 +184,8 @@ static TaskType *task_ptr;
 
 static int k_line_initialized;										/* K-line initialization status */
 static char display_buffer[32];										/* SSD1306 buffer */
-static int k_line_last_msg_timestamp;								/* Keeps track of last recevied k-line message timestamp. Used to keep track of k-line timeout */
+static uint32_t k_line_last_rx_msg_timestamp;						/* Keeps track of last received k-line message timestamp. Used to keep track of k-line timeout */
+static uint32_t k_line_last_tx_msg_timestamp;						/* We also need to keep track of when messages are sent in order to avoid overruns */
 
 /* USER CODE END PV */
 
@@ -169,8 +197,17 @@ static void MX_I2C3_Init(void);
 void UART2_init(uint32_t baud);								/* Initialize UART2, virtual com port */
 void TIM6_Init();											/* Timer 6 interrupts every 1000 ms and toggles an LED - that's a keepalive */
 int k_line_init(uint32_t attempts);							/* Tries to initialize k-line and prints number of attempts on display */
-void set_k_line_msg_timestamp(const uint32_t timestamp);			/* Update k_line_last_msg_timestamp */
-uint32_t get_k_line_msg_timestamp();								/* Get value of k_line_last_msg_timestamp */
+void set_k_line_rx_msg_timestamp(const uint32_t timestamp);			/* Update k_line_last_rx_msg_timestamp */
+uint32_t get_k_line_rx_msg_timestamp();								/* Get value of k_line_last_rx_msg_timestamp */
+void set_k_line_tx_msg_timestamp(const uint32_t timestamp);
+uint32_t get_k_line_tx_msg_timestamp();
+
+/* Display helper functions */
+void prepare_display();		/* Partitions the display in four quadrants for different data */
+void print_temp(const uint16_t temp);	/* Prints the engine temperature at the corresponding x & y coordinates */
+void print_rpm(const uint16_t rpm);	/* Prints the engine rpm at the corresponding x & y coordinates */
+void print_speed(const uint16_t speed);	/* Prints the speed at the corresponding x & y coordinates */
+void print_line(const char *msg, const display_line line);	/* Prints a message on the display line */
 
 /* Controller handlers. The controller takes its data from the VCP */
 void change_tim6_period_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length, uint8_t *response, uint8_t *response_length);		/* Controller handler. Example function only; changes TIM6 period */
@@ -180,6 +217,8 @@ void initialize_k_line_handler(const uint8_t *command_buffer, const uint32_t com
 /* OBD2 handlers. The OBD2 parser takes its data from UART1 (K-line) */
 void obd2_default_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length);													/* OBD2 handler - default OBD2 response handler. Sends out the data via USART2 */
 void obd2_coolant_temp_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length);											/* Convert the data to temperature and display it */
+void obd2_rpm_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length);														/* Convert data to an integer and display it */
+void obd2_speed_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length);													/* Convert data to an integer and display it */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -222,11 +261,8 @@ int main(void)
 	UART2_init(115200);			/* Virtual com port */
 	TIM6_Init();
 
-	SSD1306_Init();				/* Display */
-	sprintf(display_buffer, "Initializing...");
-	SSD1306_GotoXY (1,1);
-	SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
-	SSD1306_UpdateScreen(); // update screen
+	SSD1306_Init();				/* Display driver init */
+	prepare_display();			/* Get the display ready for printing data */
 
 	controller_init(usart2_rx_buffer_handle, usart2_tx_buffer_handle);					/* Initialize command controller with already initialized circular buffers */
 	controller_add_command_handler(0xAB, change_tim6_period_handler);					/* Add command handlers to controller */	/* Try sending fe04ab3e806b or fe04abfa00a7 */
@@ -234,11 +270,15 @@ int main(void)
 	controller_add_command_handler(0xA2, initialize_k_line_handler);
 
 	k_line_driver_init();																/* Initialize k-line rx & tx buffers */
-	k_line_initialized = k_line_init(3);												/* Try initializing the K-line */														/* Perform a slow init and initialize the k-line UART */
+	k_line_initialized = k_line_init(3);												/* Try initializing the K-line */
 
 	obd2_controller_init(k_line_rx_buffer_handle);										/* Initialize OBD2 controller with the buffer */
 	obd2_controller_add_default_handler(obd2_default_handler);							/* Install default OBD2 response handler. All responses for a service different from 0x01 will be sent to that handler */
-	obd2_controller_add_command_handler(0x05, obd2_coolant_temp_handler);				/* Add a few Service 01 PID handlers */
+	obd2_controller_add_command_handler(PID_COOLANT_TEMPERATURE, obd2_coolant_temp_handler);	/* Add a few Service 01 PID handlers */
+	obd2_controller_add_command_handler(PID_ENGINE_RPM, obd2_rpm_handler);
+	obd2_controller_add_command_handler(PID_ENGINE_SPEED, obd2_speed_handler);
+
+	set_k_line_tx_msg_timestamp(0);														/* No messages have been sent out yet at this point */
 
 	number_of_tasks = get_number_of_tasks();											/* Initialize scheduler */
 	task_ptr = tasks_get_config();
@@ -462,7 +502,7 @@ void UART2_init(uint32_t baud)
 }
 
 /****************************************************************************************
- * USART2 Handle interrupts and fill buffers
+ * USART2 Handle Virtual Com Port interrupts and fill buffers
  ****************************************************************************************/
 void USART2_IRQHandler(void)
 {
@@ -557,16 +597,11 @@ void TIM6_DAC_IRQHandler()
  *********************************************************************************************/
 int k_line_init(uint32_t attempts)
 {
-	SSD1306_Clear();
 	int status = 0;
 
 	for (int i = 0; i < attempts; i++)
 	{
-		sprintf(display_buffer, "K-Line Attempt %d", i+1);
-		SSD1306_GotoXY (1,1); // goto 10, 10
-		SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
-		SSD1306_UpdateScreen(); // update screen
-
+		print_line("CONNECTING...", LINE_1);
 		status = k_line_slow_init();
 		if (status)
 			break;
@@ -574,36 +609,149 @@ int k_line_init(uint32_t attempts)
 
 	if (status)
 	{
-		sprintf(display_buffer, "Success!");
-		set_k_line_msg_timestamp(HAL_GetTick());
+		print_line("CONNECTED", LINE_1);
+		set_k_line_rx_msg_timestamp(HAL_GetTick());
 	}
 	else
 	{
+		print_line("FAILED!", LINE_1);
 		sprintf(display_buffer, "Failed!");
-		set_k_line_msg_timestamp(0);
+		set_k_line_rx_msg_timestamp(0);
 	}
-
-	SSD1306_GotoXY (1,11); // goto 10, 10
-	SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
-	SSD1306_UpdateScreen(); // update screen
 
 	return status;
 }
 
 /*********************************************************************************************
- * Update last k-line message timestamp
+ * Update last k-line received message timestamp
  *********************************************************************************************/
-void set_k_line_msg_timestamp(const uint32_t timestamp)
+void set_k_line_rx_msg_timestamp(const uint32_t timestamp)
 {
-	k_line_last_msg_timestamp = timestamp;
+	k_line_last_rx_msg_timestamp = timestamp;
 }
 
 /*********************************************************************************************
- * Get last k-line message timestamp
+ * Get last k-line received message timestamp
  *********************************************************************************************/
-uint32_t get_k_line_msg_timestamp()
+uint32_t get_k_line_rx_msg_timestamp()
 {
-	return k_line_last_msg_timestamp;
+	return k_line_last_rx_msg_timestamp;
+}
+
+/*********************************************************************************************
+ * Update last k-line transmitted message timestamp
+ *********************************************************************************************/
+void set_k_line_tx_msg_timestamp(const uint32_t timestamp)
+{
+	k_line_last_tx_msg_timestamp = timestamp;
+}
+
+/*********************************************************************************************
+ * Get last k-line transmitted message timestamp
+ *********************************************************************************************/
+uint32_t get_k_line_tx_msg_timestamp()
+{
+	return k_line_last_tx_msg_timestamp;
+}
+
+/*********************************************************************************************
+ * Divides the display buffer in four zones for temperature, RPM, speed and status, and
+ * updates it. Needs to be called once in the beginning of the code
+ *********************************************************************************************/
+void prepare_display()
+{
+	sprintf(display_buffer, "TEMP");
+	SSD1306_GotoXY (1,0);
+	SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
+
+	print_temp(999);
+
+	sprintf(display_buffer, "RPM");
+	SSD1306_GotoXY (84,0);
+	SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
+
+	print_rpm(9999);
+
+	sprintf(display_buffer, "SPEED");
+	SSD1306_GotoXY (1,53);
+	SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
+
+	print_speed(999);
+
+	print_line("DISCONNECTED", LINE_1);
+
+	SSD1306_UpdateScreen(); // update screen
+}
+
+/*********************************************************************************************
+ * Prints the temperature
+ *********************************************************************************************/
+void print_temp(const uint16_t temp)
+{
+	sprintf(display_buffer, "%-4u", temp);
+	SSD1306_GotoXY (DISPLAY_TEMP_X, DISPLAY_TEMP_Y);
+	SSD1306_Puts (display_buffer, &Font_11x18, 1); // print message
+
+	SSD1306_UpdateScreen(); // update screen
+}
+
+/*********************************************************************************************
+ * Prints the RPM
+ *********************************************************************************************/
+void print_rpm(const uint16_t rpm)
+{
+	sprintf(display_buffer, "%-4u", rpm);
+	SSD1306_GotoXY (DISPLAY_RPM_X, DISPLAY_RPM_Y);
+	SSD1306_Puts (display_buffer, &Font_11x18, 1); // print message
+
+	SSD1306_UpdateScreen(); // update screen
+}
+
+/*********************************************************************************************
+ * Prints the speed
+ *********************************************************************************************/
+void print_speed(const uint16_t speed)
+{
+	sprintf(display_buffer, "%-4u", speed);
+	SSD1306_GotoXY (DISPLAY_SPEED_X, DISPLAY_SPEED_Y);
+	SSD1306_Puts (display_buffer, &Font_11x18, 1); // print message
+
+	SSD1306_UpdateScreen(); // update screen
+}
+
+/*********************************************************************************************
+ * Prints tan information line
+ *********************************************************************************************/
+void print_line(const char *msg, const display_line line)
+{
+	if (strlen(msg) > 12)
+	{
+		memcpy(display_buffer, msg, 12);
+	}
+	else
+	{
+		sprintf(display_buffer, "%12s", msg);
+	}
+
+	switch (line)
+	{
+	case LINE_1:
+		SSD1306_GotoXY (DISPLAY_STATUS_LINE_1_X, DISPLAY_STATUS_LINE_1_Y);
+		SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
+		break;
+	case LINE_2:
+		SSD1306_GotoXY (DISPLAY_STATUS_LINE_2_X, DISPLAY_STATUS_LINE_2_Y);
+		SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
+		break;
+	case LINE_3:
+		SSD1306_GotoXY (DISPLAY_STATUS_LINE_3_X, DISPLAY_STATUS_LINE_3_Y);
+		SSD1306_Puts (display_buffer, &Font_7x10, 1); // print message
+		break;
+	default:
+		break;
+	}
+
+	SSD1306_UpdateScreen();
 }
 
 /*********************************************************************************************
@@ -688,9 +836,9 @@ void initialize_k_line_handler(const uint8_t *command_buffer, const uint32_t com
 		sprintf(msg, "Init Failed!");
 	}
 
-	SSD1306_GotoXY (10,10); // goto 10, 10
-	SSD1306_Puts (msg, &Font_7x10, 1); // print message
-	SSD1306_UpdateScreen(); // update screen
+	SSD1306_GotoXY (10,10);
+	SSD1306_Puts (msg, &Font_7x10, 1);
+	SSD1306_UpdateScreen();
 
 	/* A response message sent out via VCP */
 	response[0] = 0x41;
@@ -707,7 +855,8 @@ void initialize_k_line_handler(const uint8_t *command_buffer, const uint32_t com
  *********************************************************************************************/
 void obd2_default_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length)
 {
-	set_k_line_msg_timestamp(HAL_GetTick());
+	set_k_line_rx_msg_timestamp(HAL_GetTick());
+
 	for (int i = 0; i < command_buffer_length; i++)
 	{
 		circular_buf_put(usart2_tx_buffer_handle, command_buffer[i]);
@@ -715,35 +864,58 @@ void obd2_default_handler(const uint8_t *command_buffer, const uint32_t command_
 }
 
 /*********************************************************************************************
- * OBD2 Coolant Temperature handler
+ * OBD2 Coolant Temperature Message handler
  *********************************************************************************************/
 void obd2_coolant_temp_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length)
 {
-	set_k_line_msg_timestamp(HAL_GetTick());
+	/* Example of OBD2 response: 83 f1 10 41 05 5f 29 */
 
-	char msg[32];
+	set_k_line_rx_msg_timestamp(HAL_GetTick());
 
-	if (command_buffer_length != 7)
+	if (command_buffer_length != 7 || command_buffer[4] != PID_COOLANT_TEMPERATURE)
 	{
 		return;
 	}
 
-	if (command_buffer[4] != 0x05)
+	uint16_t temp = command_buffer[5] - 40;
+	print_temp(temp);
+}
+
+/*********************************************************************************************
+ * OBD2 RPM Message handler
+ *********************************************************************************************/
+void obd2_rpm_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length)
+{
+	/* Example of OBD2 response: 84 f1 10 41 0c 0c 83 61 - 800 rpm; 84 f1 10 41 0c 0c 63 41 - 792 rpm */
+	set_k_line_rx_msg_timestamp(HAL_GetTick());
+
+	uint16_t rpm;
+
+	if (command_buffer_length != 8 || command_buffer[4] != PID_ENGINE_RPM)
 	{
 		return;
 	}
 
-	sprintf(msg, "Temp: %d", command_buffer[5] - 40);
-	SSD1306_GotoXY (1,30); //
-	SSD1306_Puts (msg, &Font_7x10, 1); // print message
-	SSD1306_UpdateScreen(); // update screen
+	rpm = (uint16_t) ( (256 * command_buffer[5]) + command_buffer[6] ) / 4;		/* Convert bytes to RPM. See Wikipedia's article on OBD2 PIDs */
+	print_rpm(rpm);
+}
 
-	/* Send the data out the VCP - for debug only */
-	circular_buf_put(usart2_tx_buffer_handle, 'T');
-	circular_buf_put(usart2_tx_buffer_handle, ':');
-	circular_buf_put(usart2_tx_buffer_handle, command_buffer[5]);
-	circular_buf_put(usart2_tx_buffer_handle, 'C');
+/*********************************************************************************************
+ * OBD2 Speed Message handler
+ *********************************************************************************************/
+void obd2_speed_handler(const uint8_t *command_buffer, const uint32_t command_buffer_length)
+{
+	set_k_line_rx_msg_timestamp(HAL_GetTick());
 
+	uint16_t speed;
+
+	if (command_buffer_length != 7 || command_buffer[4] != PID_ENGINE_SPEED)
+	{
+		return;
+	}
+
+	speed = (uint16_t) command_buffer[5];
+	print_speed(speed);
 }
 
 /*********************************************************************************************
@@ -762,24 +934,56 @@ void uart2_response_task()
 /*********************************************************************************************
  * Periodic task to send a OBD2 query for coolant temperature
  *********************************************************************************************/
-void k_line_coolant_query_task()
+void obd2_coolant_query_task()
 {
 	static uint8_t coolant_request[] = {0xC2, 0x33, 0xF1, 0x01, 0x05, 0xEC};
-	if (k_line_initialized)
+	if (k_line_initialized && (HAL_GetTick() - get_k_line_tx_msg_timestamp()) >= K_LINE_INTER_MSG_TIME)
 	{
 		obd2_controller_send_request(coolant_request, 6);
+		set_k_line_tx_msg_timestamp(HAL_GetTick());
 	}
 }
 
 /*********************************************************************************************
- * Periodic task to check k-line status by checking if the last obd2 messager timestamp is
- * from 5 seconds (or more). If that is the case, the k-line is re-initialized
+ * Periodic task to send a OBD2 query for RPM
+ *********************************************************************************************/
+void obd2_rpm_query_task()
+{
+	static uint8_t rpm_request[] = {0xC2, 0x33, 0xF1, 0x01, 0x0C, 0xF3};
+	if (k_line_initialized && (HAL_GetTick() - get_k_line_tx_msg_timestamp()) >= K_LINE_INTER_MSG_TIME)
+	{
+		obd2_controller_send_request(rpm_request, 6);
+		set_k_line_tx_msg_timestamp(HAL_GetTick());
+	}
+}
+
+/*********************************************************************************************
+ * Periodic task to send a OBD2 query for speed
+ *********************************************************************************************/
+void obd2_speed_query_task()
+{
+	static uint8_t speed_request[] = {0xC2, 0x33, 0xF1, 0x01, 0x0D, 0xF4};
+	if (k_line_initialized && (HAL_GetTick() - get_k_line_tx_msg_timestamp()) >= K_LINE_INTER_MSG_TIME)
+	{
+		obd2_controller_send_request(speed_request, 6);
+		set_k_line_tx_msg_timestamp(HAL_GetTick());
+	}
+}
+
+/*********************************************************************************************
+ * Periodic task to check k-line status by checking if the last obd2 message timestamp is
+ * from 10 seconds (or more) ago-. If that is the case, the k-line is re-initialized
  *********************************************************************************************/
 void k_line_health_task()
 {
-	if (HAL_GetTick() - get_k_line_msg_timestamp() > 5000)
+	uint32_t now = HAL_GetTick();
+
+	if ( ( now - get_k_line_rx_msg_timestamp() ) > 10000)
 	{
-		k_line_initialized = k_line_init(1);
+		print_temp(0);
+		print_rpm(0);
+		print_speed(0);
+		k_line_initialized = k_line_init(1);		/* Attempt to initialize the k-line */
 	}
 }
 

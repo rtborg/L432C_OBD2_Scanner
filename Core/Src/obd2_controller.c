@@ -21,6 +21,7 @@
 #define FUNCTION_HANDLERS_BUFFER_SIZE 256
 #define CMD_BUFFER_SIZE 256
 #define CMD_TIMEOUT_MS	20
+#define INTER_BYTE_TIME	5
 
 /* File private variables */
 static obd2_command_handler commands[FUNCTION_HANDLERS_BUFFER_SIZE];			/* Array of pointers to command handlers */
@@ -75,7 +76,6 @@ void obd2_controller_task()
 			process_command = state_await_header;		/* If false, reset command state*/
 			buffer_index = 0;							/* Reset buffer */
 		}
-
 
 		circular_buf_get(incoming_queue, &ch);			/* Get incoming char */
 		process_command(ch);							/* Processes the command and calls handler */
@@ -138,7 +138,7 @@ uint8_t inter_byte_time_exceeded()
 
 	uint32_t time_now = HAL_GetTick();
 
-	if (time_now - _lastByteReceivedTime >= CMD_TIMEOUT_MS)
+	if (time_now - _lastByteReceivedTime >= INTER_BYTE_TIME)
 	{
 		temp = 1;
 	}
@@ -173,7 +173,7 @@ void state_in_message(uint8_t c)
 	obd2_response_buffer[buffer_index++] = c;
 	if (buffer_index == CMD_BUFFER_SIZE) buffer_index = 0;		/* A sloppy way of handling buffer overflow */
 
-	if ( ( (obd2_response_buffer[0] & 0x3F) +4 ) == buffer_index)				/* Check message length; it is encoded in the format byte */
+	if ( ( (obd2_response_buffer[0] & 0x3F) + 4 ) == buffer_index)				/* Check message length; it is encoded in the format byte */
 	{
 		chk = checksum(obd2_response_buffer, buffer_index-1);					/*Each command ends with a checksum byte */
 

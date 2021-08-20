@@ -55,9 +55,11 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 /* Periodic tasks, run by the scheduler */
-void uart2_response_task();
-void k_line_coolant_query_task();
-void k_line_health_task();
+void uart2_response_task();			/* Checks if there's any bytes in the tx buffer, and triggers ISR if so */
+void obd2_coolant_query_task();		/* Sends a coolant query */
+void obd2_rpm_query_task();			/* Sends a RPM query */
+void obd2_speed_query_task();
+void k_line_health_task();			/* Checks last OBD2 message timestamp, and re-initializes the k-line if it's older than 5 seconds */
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
@@ -74,7 +76,9 @@ void k_line_health_task();
 #define LD3_Pin GPIO_PIN_3
 #define LD3_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
-
+#define PID_COOLANT_TEMPERATURE			0x05
+#define PID_ENGINE_RPM					0x0C
+#define PID_ENGINE_SPEED				0x0D
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

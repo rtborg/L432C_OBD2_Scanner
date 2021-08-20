@@ -16,8 +16,10 @@ static TaskType tasks[] =
   	{ 0             , 0, controller_task	},
 	{ 0             , 0, obd2_controller_task	},
 	{ 0             , 0, uart2_response_task	},
-	{ 3000			, 0, k_line_coolant_query_task},
-  	{ 5000			, 0, k_line_health_task }
+	{ 2000			, 0, obd2_coolant_query_task},
+	{ 100			, 0, obd2_rpm_query_task},
+	{ 50			, 0, obd2_speed_query_task},
+  	{ 10000			, 0, k_line_health_task }
 };
 
 

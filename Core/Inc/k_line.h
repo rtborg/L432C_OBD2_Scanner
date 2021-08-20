@@ -21,7 +21,7 @@
 #define K_LINE_TX_BUFFER_SIZE	32
 
 #define K_LINE_TX_TIMEOUT		10
-#define K_LINE_RX_TIMEOUT		10
+#define K_LINE_RX_TIMEOUT		10	/* Logic captures show 1 ms inter-byte timing */
 
 #include "circular_buffer.h"
 
